@@ -1,3 +1,4 @@
+
 # pos_app.py
 import os
 import re
@@ -11,14 +12,18 @@ from email.mime.text import MIMEText
 
 import pandas as pd
 import streamlit as st
+# import pywhatkit
 
 # ReportLab for PDF
+canvas = None
+MM = 1
 try:
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas as canvas_
+    from reportlab.lib.units import mm as mm_
+    canvas = canvas_
+    MM = mm_
 except ImportError:
-    canvas = None
-    mm = 1
+    pass
 
 # =========================
 # CONFIG
@@ -40,10 +45,6 @@ DEFAULT_SMTP_PORT = int(get_secret("SMTP_PORT", "587"))
 DEFAULT_SENDER_EMAIL = get_secret("SENDER_EMAIL", "")
 DEFAULT_SENDER_PASSWORD = get_secret("SENDER_PASSWORD", "")
 
-# WhatsApp Cloud API
-DEFAULT_WHATSAPP_TOKEN = get_secret("WHATSAPP_TOKEN", "")
-DEFAULT_PHONE_NUMBER_ID = get_secret("PHONE_NUMBER_ID", "")
-
 # =========================
 # SESSION STATE
 # =========================
@@ -61,9 +62,6 @@ _defaults = {
     "smtp_port": DEFAULT_SMTP_PORT,
     "sender_email": DEFAULT_SENDER_EMAIL,
     "sender_password": DEFAULT_SENDER_PASSWORD,
-    # WhatsApp
-    "whatsapp_token": DEFAULT_WHATSAPP_TOKEN,
-    "phone_number_id": DEFAULT_PHONE_NUMBER_ID,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -163,13 +161,13 @@ def clear_bill():
 # PDF RECEIPT
 # =========================
 def build_pdf_receipt(order_id: str) -> BytesIO | None:
-    if canvas is None or mm is None:
+    if canvas is None or MM is None:
         st.error("ReportLab is not installed. Please run: pip install reportlab")
         return None
 
     lines = max(1, len(st.session_state.bill))
-    thermal_width = 80 * mm
-    thermal_height = (70 + 8 * lines + 40) * mm  # dynamic height
+    thermal_width = 80 * MM
+    thermal_height = (70 + 8 * lines + 40) * MM  # dynamic height
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=(thermal_width, thermal_height))
@@ -287,86 +285,35 @@ def send_email_with_pdf(to_email: str, pdf_bytes: bytes, order_id: str) -> bool:
         return False
 
 # =========================
-# WHATSAPP CLOUD API (PDF)
+# WHATSAPP MESSAGE
 # =========================
-def whatsapp_upload_media(pdf_bytes: bytes, filename: str) -> str | None:
-    """
-    Upload media to WhatsApp Cloud API /media endpoint.
-    Returns media_id on success.
-    """
-    token = st.session_state.whatsapp_token
-    pnid = st.session_state.phone_number_id
-    if not token or not pnid:
-        st.error("WhatsApp API credentials missing. Set WHATSAPP_TOKEN and PHONE_NUMBER_ID in Admin → WhatsApp Settings.")
-        return None
-
-    url = f"https://graph.facebook.com/v20.0/{pnid}/media"
-    headers = {"Authorization": f"Bearer {token}"}
-    files = {
-        "file": (filename, pdf_bytes, "application/pdf"),
-        "messaging_product": (None, "whatsapp"),
-    }
-    try:
-        resp = requests.post(url, headers=headers, files=files, timeout=30)
-        if resp.status_code == 200:
-            media_id = resp.json().get("id")
-            return media_id
-        else:
-            st.error(f"WhatsApp media upload failed: {resp.status_code} {resp.text}")
-            return None
-    except Exception as e:
-        st.error(f"WhatsApp media upload error: {e}")
-        return None
-
-def whatsapp_send_document(to_number_e164: str, media_id: str, filename: str) -> bool:
-    """
-    Send a document message using uploaded media_id.
-    to_number_e164: e.g., '919259317713' (country code + number, no +)
-    """
-    token = st.session_state.whatsapp_token
-    pnid = st.session_state.phone_number_id
-    if not token or not pnid:
-        st.error("WhatsApp API credentials missing.")
-        return False
-
-    url = f"https://graph.facebook.com/v20.0/{pnid}/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number_e164,
-        "type": "document",
-        "document": {
-            "id": media_id,
-            "filename": filename,
-        },
-    }
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
-        if resp.status_code in (200, 201):
-            return True
-        st.error(f"WhatsApp send failed: {resp.status_code} {resp.text}")
-        return False
-    except Exception as e:
-        st.error(f"WhatsApp send error: {e}")
-        return False
-
-def send_whatsapp_pdf(to_number_raw: str, pdf_bytes: bytes, order_id: str) -> bool:
-    """
-    Orchestrates upload + send.
-    to_number_raw can contain spaces/+; we'll normalize to E.164 without '+'.
-    """
-    to_digits = only_digits(to_number_raw)
-    if not to_digits:
-        st.error("Invalid customer phone for WhatsApp.")
-        return False
-    filename = f"receipt_{order_id}.pdf"
-    media_id = whatsapp_upload_media(pdf_bytes, filename)
-    if not media_id:
-        return False
-    return whatsapp_send_document(to_digits, media_id, filename)
+# def send_whatsapp_message(to_number_raw: str, order_id: str, grand_total: float) -> bool:
+#     """
+#     Sends a WhatsApp message with order details using pywhatkit.
+#     """
+#     to_digits = only_digits(to_number_raw)
+#     if not to_digits:
+#         st.error("Invalid customer phone for WhatsApp.")
+#         return False
+#
+#     items_str = "\n".join([f"- {i['item']} ({i['size']}): ₹{i['price']:.2f}" for i in st.session_state.bill])
+#     message = (
+#         f"Thank you for your order from Dhaliwal's Food Court!\n\n"
+#         f"*Order ID:* {order_id}\n"
+#         f"*Date:* {datetime.now().strftime('%d %b %Y %H:%M')}\n\n"
+#         f"*Items:*\n{items_str}\n\n"
+#         f"*Grand Total:* ₹{grand_total:.2f}\n\n"
+#         f"We hope you enjoy your meal!"
+#     )
+#
+#     try:
+#         # Send message with a 1-minute delay from now
+#         now = datetime.now()
+#         pywhatkit.sendwhatmsg(f"+{to_digits}", message, now.hour, now.minute + 1, 15, True, 5)
+#         return True
+#     except Exception as e:
+#         st.error(f"WhatsApp send error: {e}")
+#         return False
 
 # =========================
 # ORDER LOGGING
@@ -453,15 +400,6 @@ with st.sidebar:
             'SMTP_SERVER="smtp.gmail.com"\nSMTP_PORT="587"\nSENDER_EMAIL="your@gmail.com"\nSENDER_PASSWORD="your-app-password"'
         )
 
-        st.divider()
-        st.subheader("WhatsApp Settings (Cloud API)")
-        st.session_state.whatsapp_token = st.text_input("WHATSAPP_TOKEN", value=st.session_state.whatsapp_token, type="password")
-        st.session_state.phone_number_id = st.text_input("PHONE_NUMBER_ID", value=st.session_state.phone_number_id)
-
-        st.caption(
-            "Get these from Meta Developers: App → WhatsApp → API Setup.\n"
-            "Customer numbers must include country code (e.g., 91XXXXXXXXXX)."
-        )
 
     elif password:
         st.error("Incorrect password")
@@ -477,16 +415,17 @@ with col1:
     if not menu_df.empty:
         num_columns = 3
         cols = st.columns(num_columns)
-        for idx, row in menu_df.iterrows():
-            with cols[int(idx) % num_columns]:
+        for idx in menu_df.index:
+            row = menu_df.loc[idx]
+            with cols[idx % num_columns]:
                 image_path = row["Image"] if "Image" in row and pd.notna(row["Image"]) and str(row["Image"]).strip() else None
                 if image_path and os.path.exists(image_path):
                     st.image(image_path, use_column_width=True)
                 
                 st.markdown(f'<h4>{row["Item"]}</h4>', unsafe_allow_html=True)
 
-                half = float(row["Half"])
-                full = float(row["Full"])
+                half = float(row.get("Half", 0))
+                full = float(row.get("Full", 0))
                 if half > 0:
                     if st.button(f"Half - ₹{half:.2f}", key=f"half_{idx}"):
                         add_to_bill(row["Item"], half, "Half")
@@ -527,7 +466,7 @@ with col2:
         st.subheader("Finalize & Send")
 
         send_email = st.checkbox("Email PDF to customer", value=bool(st.session_state.cust_email))
-        send_whatsapp = st.checkbox("Send PDF to WhatsApp")
+        send_whatsapp = st.checkbox("Send Order Details to WhatsApp")
 
         if st.button("Finalize Order (Log + Selected Sends)"):
             # Compute totals
@@ -548,12 +487,13 @@ with col2:
                     st.warning("Email failed—check SMTP settings.")
 
             # WhatsApp
-            if send_whatsapp and pdf_buffer and st.session_state.cust_phone:
-                ok_wa = send_whatsapp_pdf(st.session_state.cust_phone, pdf_buffer.getvalue(), order_id)
-                if ok_wa:
-                    st.success(f"WhatsApp PDF sent to {only_digits(st.session_state.cust_phone)}")
-                else:
-                    st.warning("WhatsApp send failed—check API settings and recipient number.")
+            if send_whatsapp and st.session_state.cust_phone:
+                st.warning("WhatsApp functionality is temporarily disabled due to an issue with the pywhatkit library.")
+                # ok_wa = send_whatsapp_message(st.session_state.cust_phone, order_id, grand_total)
+                # if ok_wa:
+                #     st.success(f"WhatsApp message sent to {only_digits(st.session_state.cust_phone)}")
+                # else:
+                #     st.warning("WhatsApp send failed—check phone number and ensure you are logged into WhatsApp Web.")
 
             if not (send_email or send_whatsapp):
                 st.info("Order logged. Select Email or WhatsApp to send the receipt.")
