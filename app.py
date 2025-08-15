@@ -5,7 +5,7 @@ import requests
 import time
 import urllib.parse
 import webbrowser
-import pyautogui  # pip install pyautogui
+# import pyautogui   pip install pyautogui
 from io import BytesIO
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
